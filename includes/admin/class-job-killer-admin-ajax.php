@@ -71,6 +71,11 @@ class Job_Killer_Admin_Ajax {
             wp_send_json_error(__('Feed URL is required', 'job-killer'));
         }
         
+        // Initialize helper if needed
+        if (!class_exists('Job_Killer_Helper')) {
+            wp_send_json_error(__('Helper class not available', 'job-killer'));
+        }
+        
         $helper = new Job_Killer_Helper();
         $validation = $helper->validate_feed_url($url);
         
@@ -79,6 +84,10 @@ class Job_Killer_Admin_Ajax {
         }
         
         // Test feed parsing
+        if (!class_exists('Job_Killer_Importer') || !class_exists('Job_Killer_Rss_Providers')) {
+            wp_send_json_error(__('Required classes not available', 'job-killer'));
+        }
+        
         $importer = new Job_Killer_Importer();
         $rss_providers = new Job_Killer_Rss_Providers();
         
@@ -120,6 +129,10 @@ class Job_Killer_Admin_Ajax {
         
         if (empty($feed_data['name']) || empty($feed_data['url'])) {
             wp_send_json_error(__('Feed name and URL are required', 'job-killer'));
+        }
+        
+        if (!class_exists('Job_Killer_Helper')) {
+            wp_send_json_error(__('Helper class not available', 'job-killer'));
         }
         
         $helper = new Job_Killer_Helper();

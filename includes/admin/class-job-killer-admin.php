@@ -25,6 +25,8 @@ class Job_Killer_Admin {
     public $ajax;
     
     /**
+     * Auto feeds instance
+     */
     public $auto_feeds;
     
     /**
@@ -37,7 +39,9 @@ class Job_Killer_Admin {
      */
     public function __construct() {
         $this->init_hooks();
-        $this->load_components();
+        
+        // Load components after admin_init to ensure all dependencies are available
+        add_action('admin_init', array($this, 'load_components'), 5);
     }
     
     /**
@@ -53,11 +57,23 @@ class Job_Killer_Admin {
     /**
      * Load admin components
      */
-    private function load_components() {
-        $this->settings = new Job_Killer_Admin_Settings();
-        $this->ajax = new Job_Killer_Admin_Ajax();
-        $this->auto_feeds = new Job_Killer_Admin_Auto_Feeds();
-        $this->setup = new Job_Killer_Admin_Setup();
+    public function load_components() {
+        // Only load if classes exist
+        if (class_exists('Job_Killer_Admin_Settings')) {
+            $this->settings = new Job_Killer_Admin_Settings();
+        }
+        
+        if (class_exists('Job_Killer_Admin_Ajax')) {
+            $this->ajax = new Job_Killer_Admin_Ajax();
+        }
+        
+        if (class_exists('Job_Killer_Admin_Auto_Feeds')) {
+            $this->auto_feeds = new Job_Killer_Admin_Auto_Feeds();
+        }
+        
+        if (class_exists('Job_Killer_Admin_Setup')) {
+            $this->setup = new Job_Killer_Admin_Setup();
+        }
     }
     
     /**
@@ -144,6 +160,18 @@ class Job_Killer_Admin {
             'job-killer-logs',
             array($this, 'logs_page')
         );
+        
+        // Setup wizard (only if not completed)
+        if (!get_option('job_killer_setup_completed')) {
+            add_submenu_page(
+                null, // Hidden from menu
+                __('Setup Wizard', 'job-killer'),
+                __('Setup Wizard', 'job-killer'),
+                'manage_options',
+                'job-killer-setup',
+                array($this, 'setup_page')
+            );
+        }
     }
     
     /**
@@ -229,8 +257,12 @@ class Job_Killer_Admin {
         // Check if plugin was just activated
         if (get_option('job_killer_activated')) {
             delete_option('job_killer_activated');
-            wp_redirect(admin_url('admin.php?page=job-killer&welcome=1'));
-            exit;
+            
+            // Only redirect if not doing AJAX and user has permissions
+            if (!wp_doing_ajax() && current_user_can('manage_options')) {
+                wp_redirect(admin_url('admin.php?page=job-killer&welcome=1'));
+                exit;
+            }
         }
     }
     
@@ -250,10 +282,20 @@ class Job_Killer_Admin {
      * Dashboard page
      */
     public function dashboard_page() {
-        $helper = new Job_Killer_Helper();
-        $stats = $helper->get_import_stats();
-        $chart_data = $helper->get_chart_data(30);
-        $recent_logs = $helper->get_logs(array('limit' => 10));
+        // Initialize helper if not available
+        if (!$this->helper && class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
+        
+        $stats = array();
+        $chart_data = array();
+        $recent_logs = array();
+        
+        if ($this->helper) {
+            $stats = $this->helper->get_import_stats();
+            $chart_data = $this->helper->get_chart_data(30);
+            $recent_logs = $this->helper->get_logs(array('limit' => 10));
+        }
         
         // Get next scheduled import
         $next_import = wp_next_scheduled('job_killer_import_jobs');
@@ -271,7 +313,11 @@ class Job_Killer_Admin {
      * Settings page
      */
     public function settings_page() {
-        $this->settings->render_page();
+        if ($this->settings && method_exists($this->settings, 'render_page')) {
+            $this->settings->render_page();
+        } else {
+            echo '<div class="notice notice-error"><p>' . __('Settings component not available.', 'job-killer') . '</p></div>';
+        }
     }
     
     /**
@@ -279,8 +325,14 @@ class Job_Killer_Admin {
      */
     public function feeds_page() {
         $feeds = get_option('job_killer_feeds', array());
-        $rss_providers = new Job_Killer_Rss_Providers();
-        $providers = $rss_providers->get_providers();
+        
+        $rss_providers = null;
+        $providers = array();
+        
+        if (class_exists('Job_Killer_Rss_Providers')) {
+            $rss_providers = new Job_Killer_Rss_Providers();
+            $providers = $rss_providers->get_providers();
+        }
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/feeds.php';
     }
@@ -289,7 +341,11 @@ class Job_Killer_Admin {
      * Auto feeds page
      */
     public function auto_feeds_page() {
-        $this->auto_feeds->render_page();
+        if ($this->auto_feeds && method_exists($this->auto_feeds, 'render_page')) {
+            $this->auto_feeds->render_page();
+        } else {
+            echo '<div class="notice notice-error"><p>' . __('Auto feeds component not available.', 'job-killer') . '</p></div>';
+        }
     }
     
     /**
@@ -297,6 +353,17 @@ class Job_Killer_Admin {
      */
     public function api_test_page() {
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/api-test.php';
+    }
+    
+    /**
+     * Setup page
+     */
+    public function setup_page() {
+        if ($this->setup && method_exists($this->setup, 'render_setup_wizard')) {
+            $this->setup->render_setup_wizard();
+        } else {
+            echo '<div class="notice notice-error"><p>' . __('Setup component not available.', 'job-killer') . '</p></div>';
+        }
     }
     
     /**
@@ -308,11 +375,18 @@ class Job_Killer_Admin {
         $next_cleanup = wp_next_scheduled('job_killer_cleanup_logs');
         
         // Get cron history
-        $helper = new Job_Killer_Helper();
-        $cron_logs = $helper->get_logs(array(
-            'source' => 'cron',
-            'limit' => 20
-        ));
+        $cron_logs = array();
+        
+        if (!$this->helper && class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
+        
+        if ($this->helper) {
+            $cron_logs = $this->helper->get_logs(array(
+                'source' => 'cron',
+                'limit' => 20
+            ));
+        }
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/scheduling.php';
     }
@@ -321,7 +395,14 @@ class Job_Killer_Admin {
      * Logs page
      */
     public function logs_page() {
-        $helper = new Job_Killer_Helper();
+        if (!$this->helper && class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
+        
+        if (!$this->helper) {
+            echo '<div class="notice notice-error"><p>' . __('Helper component not available.', 'job-killer') . '</p></div>';
+            return;
+        }
         
         // Handle filters
         $filters = array(
@@ -333,8 +414,8 @@ class Job_Killer_Admin {
             'offset' => (max(1, intval($_GET['paged'] ?? 1)) - 1) * 50
         );
         
-        $logs = $helper->get_logs($filters);
-        $total_logs = $helper->get_log_count($filters);
+        $logs = $this->helper->get_logs($filters);
+        $total_logs = $this->helper->get_log_count($filters);
         $total_pages = ceil($total_logs / 50);
         $current_page = max(1, intval($_GET['paged'] ?? 1));
         

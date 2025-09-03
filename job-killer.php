@@ -35,10 +35,20 @@ spl_autoload_register(function ($class) {
     }
     
     $class_file = str_replace('_', '-', strtolower($class));
-    $file_path = JOB_KILLER_PLUGIN_DIR . 'includes/class-' . $class_file . '.php';
     
-    if (file_exists($file_path)) {
-        require_once $file_path;
+    // Check different possible locations for the class file
+    $possible_paths = array(
+        JOB_KILLER_PLUGIN_DIR . 'includes/class-' . $class_file . '.php',
+        JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-' . $class_file . '.php',
+        JOB_KILLER_PLUGIN_DIR . 'includes/import/class-' . $class_file . '.php',
+        JOB_KILLER_PLUGIN_DIR . 'includes/modules/wpjm/class-' . $class_file . '.php'
+    );
+    
+    foreach ($possible_paths as $file_path) {
+        if (file_exists($file_path)) {
+            require_once $file_path;
+            break;
+        }
     }
 });
 
@@ -56,6 +66,11 @@ final class Job_Killer {
      * Core instance
      */
     public $core;
+    
+    /**
+     * Plugin loaded flag
+     */
+    private $loaded = false;
     
     /**
      * Get plugin instance
@@ -78,8 +93,9 @@ final class Job_Killer {
      * Initialize hooks
      */
     private function init_hooks() {
-        add_action('plugins_loaded', array($this, 'init'), 0);
+        add_action('plugins_loaded', array($this, 'load_plugin'), 0);
         add_action('init', array($this, 'load_textdomain'));
+        add_action('init', array($this, 'init'), 10);
         
         register_activation_hook(__FILE__, array($this, 'activate'));
         register_deactivation_hook(__FILE__, array($this, 'deactivate'));
@@ -87,19 +103,78 @@ final class Job_Killer {
     }
     
     /**
-     * Initialize plugin
+     * Load plugin components
      */
-    public function init() {
-        // Check requirements
+    public function load_plugin() {
+        // Check requirements first
         if (!$this->check_requirements()) {
             return;
         }
         
-        // Initialize core
-        $this->core = new Job_Killer_Core();
-        $this->core->init();
+        // Load required files manually to ensure they're available
+        $this->load_required_files();
+        
+        // Mark as loaded
+        $this->loaded = true;
         
         do_action('job_killer_loaded');
+    }
+    
+    /**
+     * Load required files
+     */
+    private function load_required_files() {
+        // Core files
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-helper.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-cache.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-core.php';
+        
+        // Admin files (only in admin)
+        if (is_admin()) {
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-job-killer-admin.php';
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-job-killer-admin-ajax.php';
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-job-killer-admin-settings.php';
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-job-killer-admin-setup.php';
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/admin/class-job-killer-admin-auto-feeds.php';
+        }
+        
+        // Import files
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-importer.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-rss-providers.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-providers-manager.php';
+        
+        // Frontend files
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-frontend.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-shortcodes.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-widgets.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-structured-data.php';
+        
+        // Optional files
+        if (file_exists(JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-api.php')) {
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-api.php';
+        }
+        
+        if (file_exists(JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-cron.php')) {
+            require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-cron.php';
+        }
+    }
+    
+    /**
+     * Initialize plugin
+     */
+    public function init() {
+        // Only initialize if plugin was loaded successfully
+        if (!$this->loaded) {
+            return;
+        }
+        
+        // Initialize core (this will register post types and taxonomies)
+        if (class_exists('Job_Killer_Core')) {
+            $this->core = new Job_Killer_Core();
+            $this->core->init();
+        }
+        
+        do_action('job_killer_initialized');
     }
     
     /**
@@ -171,11 +246,14 @@ final class Job_Killer {
         // Schedule cron events
         $this->schedule_cron_events();
         
-        // Flush rewrite rules
-        flush_rewrite_rules();
+        // Set flag to flush rewrite rules on next init
+        set_transient('job_killer_flush_rewrite_rules', true, 30);
         
         // Set activation flag
         update_option('job_killer_activated', true);
+        
+        // Set setup redirect flag
+        set_transient('job_killer_setup_redirect', true, 30);
     }
     
     /**
@@ -185,6 +263,8 @@ final class Job_Killer {
         // Clear scheduled cron events
         wp_clear_scheduled_hook('job_killer_import_jobs');
         wp_clear_scheduled_hook('job_killer_cleanup_logs');
+        wp_clear_scheduled_hook('job_killer_cleanup_expired_jobs');
+        wp_clear_scheduled_hook('job_killer_send_daily_report');
         
         // Flush rewrite rules
         flush_rewrite_rules();
@@ -197,8 +277,10 @@ final class Job_Killer {
         // Remove options
         delete_option('job_killer_settings');
         delete_option('job_killer_feeds');
+        delete_option('job_killer_auto_feeds');
         delete_option('job_killer_activated');
         delete_option('job_killer_version');
+        delete_option('job_killer_setup_completed');
         
         // Remove custom tables
         global $wpdb;
@@ -208,6 +290,8 @@ final class Job_Killer {
         // Clear cron events
         wp_clear_scheduled_hook('job_killer_import_jobs');
         wp_clear_scheduled_hook('job_killer_cleanup_logs');
+        wp_clear_scheduled_hook('job_killer_cleanup_expired_jobs');
+        wp_clear_scheduled_hook('job_killer_send_daily_report');
     }
     
     /**
@@ -275,6 +359,7 @@ final class Job_Killer {
         
         add_option('job_killer_settings', $default_settings);
         add_option('job_killer_feeds', array());
+        add_option('job_killer_auto_feeds', array());
         add_option('job_killer_version', JOB_KILLER_VERSION);
     }
     

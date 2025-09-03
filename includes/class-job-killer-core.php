@@ -24,23 +24,36 @@ class Job_Killer_Core {
     public $rss_providers;
     public $providers_manager;
     public $structured_data;
+    public $cron;
+    public $api;
+    
+    /**
+     * Initialization flag
+     */
+    private $initialized = false;
     
     /**
      * Initialize core
      */
     public function init() {
+        // Prevent double initialization
+        if ($this->initialized) {
+            return;
+        }
+        
         $this->init_hooks();
         $this->load_components();
-        $this->register_post_types();
-        $this->register_taxonomies();
+        
+        $this->initialized = true;
     }
     
     /**
      * Initialize hooks
      */
     private function init_hooks() {
-        add_action('init', array($this, 'register_post_types'));
-        add_action('init', array($this, 'register_taxonomies'));
+        add_action('init', array($this, 'register_post_types'), 20);
+        add_action('init', array($this, 'register_taxonomies'), 25);
+        add_action('init', array($this, 'maybe_flush_rewrite_rules'), 30);
         add_action('wp_enqueue_scripts', array($this, 'enqueue_frontend_scripts'));
         add_action('job_killer_import_jobs', array($this, 'run_import'));
         add_action('job_killer_cleanup_logs', array($this, 'cleanup_logs'));
@@ -56,15 +69,53 @@ class Job_Killer_Core {
      * Load plugin components
      */
     private function load_components() {
-        $this->helper = new Job_Killer_Helper();
-        $this->importer = new Job_Killer_Importer();
-        $this->frontend = new Job_Killer_Frontend();
-        $this->rss_providers = new Job_Killer_Rss_Providers();
-        $this->providers_manager = new Job_Killer_Providers_Manager();
-        $this->structured_data = new Job_Killer_Structured_Data();
+        // Load components with error checking
+        if (class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
+        
+        if (class_exists('Job_Killer_Importer')) {
+            $this->importer = new Job_Killer_Importer();
+        }
+        
+        if (class_exists('Job_Killer_Frontend')) {
+            $this->frontend = new Job_Killer_Frontend();
+        }
+        
+        if (class_exists('Job_Killer_Rss_Providers')) {
+            $this->rss_providers = new Job_Killer_Rss_Providers();
+        }
+        
+        if (class_exists('Job_Killer_Providers_Manager')) {
+            $this->providers_manager = new Job_Killer_Providers_Manager();
+        }
+        
+        if (class_exists('Job_Killer_Structured_Data')) {
+            $this->structured_data = new Job_Killer_Structured_Data();
+        }
+        
+        if (class_exists('Job_Killer_Cron')) {
+            $this->cron = new Job_Killer_Cron();
+        }
+        
+        if (class_exists('Job_Killer_Api')) {
+            $this->api = new Job_Killer_Api();
+        }
         
         if (is_admin()) {
-            $this->admin = new Job_Killer_Admin();
+            if (class_exists('Job_Killer_Admin')) {
+                $this->admin = new Job_Killer_Admin();
+            }
+        }
+    }
+    
+    /**
+     * Maybe flush rewrite rules
+     */
+    public function maybe_flush_rewrite_rules() {
+        if (get_transient('job_killer_flush_rewrite_rules')) {
+            flush_rewrite_rules();
+            delete_transient('job_killer_flush_rewrite_rules');
         }
     }
     
@@ -72,6 +123,11 @@ class Job_Killer_Core {
      * Register job listing post type
      */
     public function register_post_types() {
+        // Don't register if WP Job Manager is handling this
+        if (apply_filters('job_killer_use_wpjm_structure', false)) {
+            return;
+        }
+        
         $labels = array(
             'name' => __('Job Listings', 'job-killer'),
             'singular_name' => __('Job Listing', 'job-killer'),
@@ -103,6 +159,14 @@ class Job_Killer_Core {
             'show_in_rest' => true
         );
         
+        // Allow filtering of post type args
+        $args = apply_filters('job_killer_post_type_args', $args);
+        
+        // Don't register if filtered to false
+        if ($args === false) {
+            return;
+        }
+        
         register_post_type('job_listing', $args);
     }
     
@@ -110,6 +174,11 @@ class Job_Killer_Core {
      * Register taxonomies
      */
     public function register_taxonomies() {
+        // Don't register if WP Job Manager is handling this
+        if (apply_filters('job_killer_use_wpjm_structure', false)) {
+            return;
+        }
+        
         // Job categories
         $category_labels = array(
             'name' => __('Job Categories', 'job-killer'),
@@ -125,7 +194,7 @@ class Job_Killer_Core {
             'menu_name' => __('Categories', 'job-killer')
         );
         
-        register_taxonomy('job_listing_category', 'job_listing', array(
+        $category_args = array(
             'hierarchical' => true,
             'labels' => $category_labels,
             'show_ui' => true,
@@ -133,7 +202,12 @@ class Job_Killer_Core {
             'query_var' => true,
             'rewrite' => array('slug' => 'job-category'),
             'show_in_rest' => true
-        ));
+        );
+        
+        $category_args = apply_filters('job_killer_taxonomy_args', $category_args, 'job_listing_category');
+        if ($category_args !== false) {
+            register_taxonomy('job_listing_category', 'job_listing', $category_args);
+        }
         
         // Job types
         $type_labels = array(
@@ -148,7 +222,7 @@ class Job_Killer_Core {
             'menu_name' => __('Types', 'job-killer')
         );
         
-        register_taxonomy('job_listing_type', 'job_listing', array(
+        $type_args = array(
             'hierarchical' => false,
             'labels' => $type_labels,
             'show_ui' => true,
@@ -156,7 +230,12 @@ class Job_Killer_Core {
             'query_var' => true,
             'rewrite' => array('slug' => 'job-type'),
             'show_in_rest' => true
-        ));
+        );
+        
+        $type_args = apply_filters('job_killer_taxonomy_args', $type_args, 'job_listing_type');
+        if ($type_args !== false) {
+            register_taxonomy('job_listing_type', 'job_listing', $type_args);
+        }
         
         // Job regions
         $region_labels = array(
@@ -171,7 +250,7 @@ class Job_Killer_Core {
             'menu_name' => __('Regions', 'job-killer')
         );
         
-        register_taxonomy('job_listing_region', 'job_listing', array(
+        $region_args = array(
             'hierarchical' => true,
             'labels' => $region_labels,
             'show_ui' => true,
@@ -179,7 +258,12 @@ class Job_Killer_Core {
             'query_var' => true,
             'rewrite' => array('slug' => 'job-region'),
             'show_in_rest' => true
-        ));
+        );
+        
+        $region_args = apply_filters('job_killer_taxonomy_args', $region_args, 'job_listing_region');
+        if ($region_args !== false) {
+            register_taxonomy('job_listing_region', 'job_listing', $region_args);
+        }
     }
     
     /**
@@ -233,12 +317,12 @@ class Job_Killer_Core {
      * Run import process
      */
     public function run_import() {
-        if ($this->importer) {
+        if ($this->importer && method_exists($this->importer, 'run_scheduled_import')) {
             $this->importer->run_scheduled_import();
         }
         
         // Also run auto feeds import
-        if ($this->providers_manager) {
+        if ($this->providers_manager && method_exists($this->providers_manager, 'run_auto_imports')) {
             $this->providers_manager->run_auto_imports();
         }
     }
@@ -247,7 +331,7 @@ class Job_Killer_Core {
      * Cleanup old logs
      */
     public function cleanup_logs() {
-        if ($this->helper) {
+        if ($this->helper && method_exists($this->helper, 'cleanup_old_logs')) {
             $this->helper->cleanup_old_logs();
         }
     }

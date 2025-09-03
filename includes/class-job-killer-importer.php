@@ -29,13 +29,21 @@ class Job_Killer_Importer {
      */
     public function __construct() {
         $this->settings = get_option('job_killer_settings', array());
-        $this->helper = new Job_Killer_Helper();
+        
+        if (class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
     }
     
     /**
      * Run scheduled import
      */
     public function run_scheduled_import() {
+        if (!$this->helper) {
+            error_log('Job Killer: Helper not available for scheduled import');
+            return;
+        }
+        
         $this->helper->log('info', 'cron', 'Starting scheduled import');
         
         // Import from traditional RSS feeds
@@ -71,15 +79,17 @@ class Job_Killer_Importer {
         
         // Import from auto feeds (new providers system)
         try {
-            $providers_manager = new Job_Killer_Providers_Manager();
-            $auto_imported = $providers_manager->run_auto_imports();
-            $total_imported += $auto_imported;
+            if (class_exists('Job_Killer_Providers_Manager')) {
+                $providers_manager = new Job_Killer_Providers_Manager();
+                $auto_imported = $providers_manager->run_auto_imports();
+                $total_imported += $auto_imported;
             
-            if ($auto_imported > 0) {
-                $this->helper->log('success', 'import', 
-                    sprintf('Imported %d jobs from auto feeds', $auto_imported),
-                    array('auto_imported' => $auto_imported)
-                );
+                if ($auto_imported > 0) {
+                    $this->helper->log('success', 'import', 
+                        sprintf('Imported %d jobs from auto feeds', $auto_imported),
+                        array('auto_imported' => $auto_imported)
+                    );
+                }
             }
             
         } catch (Exception $e) {
@@ -104,6 +114,10 @@ class Job_Killer_Importer {
      * Import jobs from a specific feed
      */
     public function import_from_feed($feed_id, $feed_config) {
+        if (!$this->helper) {
+            throw new Exception('Helper not available');
+        }
+        
         $this->helper->log('info', 'import', 
             sprintf('Starting import from feed: %s', $feed_config['name']),
             array('feed_id' => $feed_id)
